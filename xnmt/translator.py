@@ -283,18 +283,14 @@ class DefaultTranslator(Translator, Serializable, Reportable):
     for word in trg:
       col_length.append(max(len(word), 6))
     col_length.append(max(len(x) for x in src))
+    att_transpose = np.transpose(attn)
     with open(self.get_report_path() + ".attention.txt", encoding='utf-8', mode='w') as attn_file:
-      for i in range(len(src)+1):
-        if i == 0:
-          words = trg + [""]
-        else:
-          words = ["%.4f" % (f) for f in attn[i-1]] + [src[i-1]]
-        str_format = ""
-        for length in col_length:
-          str_format += "{:%ds}" % (length+2)
-        print(str_format.format(*words), file=attn_file)
+      attn_file.write('\t' + '\t'.join(src) + '\n')
+      for i in range(len(trg)):
+        coeffs = '\t'.join(map(str, list(att_transpose[i])))
+        attn_file.write('{}\t{}\n'.format(trg[i], coeffs))
 
-  
+
 class TransformerTranslator(Translator, Serializable, Reportable):
   '''
   A translator based on the transformer model.
