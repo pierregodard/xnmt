@@ -94,8 +94,24 @@ class MlpAttender(Attender, Serializable):
     self.attention_vecs.append(normalized)
     return normalized
 
-  def calc_context(self, state):
-    attention = self.calc_attention(state)
+  def calc_attention_with_temperature(self, state, temperature=10.0):
+    V = dy.parameter(self.pV)
+    U = dy.parameter(self.pU)
+
+    h = dy.tanh(dy.colwise_add(self.WI, V * state))
+    scores = dy.transpose(U * h)
+    if self.curr_sent.mask is not None:
+      scores = self.curr_sent.mask.add_to_tensor_expr(scores, multiplicator = -100.0)
+    t_scores = dy.cdiv(scores, dy.scalarInput(temperature))
+    normalized = dy.softmax(t_scores)
+    self.attention_vecs.append(normalized)
+    return normalized
+
+  def calc_context(self, state, with_temperature=True):
+    if with_temperature:
+      attention = self.calc_attention_with_temperature(state)
+    else:
+      attention = self.calc_attention(state)
     I = self.curr_sent.as_tensor()
     return I * attention
 
