@@ -128,7 +128,8 @@ class DefaultTranslator(Translator, Serializable, Reportable):
     self.start_sent(src)
     embeddings = self.src_embedder.embed_sent(src)
     encodings = self.encoder(embeddings)
-    self.attender.init_sent(encodings)
+    words = [src[0].vocab[w] for w in src[0]]
+    self.attender.init_sent(encodings, words)
     # Initialize the hidden state from the encoder
     ss = mark_as_batch([Vocab.SS] * len(src)) if is_batched(src) else Vocab.SS
     initial_state = self.decoder.initial_state(self.encoder.get_final_states(), self.trg_embedder.embed(ss))
@@ -162,7 +163,8 @@ class DefaultTranslator(Translator, Serializable, Reportable):
       self.start_sent(src)
       embeddings = self.src_embedder.embed_sent(src)
       encodings = self.encoder(embeddings)
-      self.attender.init_sent(encodings)
+      words = [src[0].vocab[w] for w in src[0]]
+      self.attender.init_sent(encodings, words)
       ss = mark_as_batch([Vocab.SS] * len(src)) if is_batched(src) else Vocab.SS
       initial_state = self.decoder.initial_state(self.encoder.get_final_states(), self.trg_embedder.embed(ss))
       search_outputs = search_strategy.generate_output(self, initial_state,

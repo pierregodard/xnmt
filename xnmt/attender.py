@@ -1,5 +1,6 @@
 import math
 import dynet as dy
+import numpy as np
 
 from xnmt import logger
 from xnmt.param_collection import ParamManager
@@ -69,9 +70,10 @@ class MlpAttender(Attender, Serializable):
     self.pU = param_collection.add_parameters((1, hidden_dim), init=param_init.initializer((1, hidden_dim)))
     self.curr_sent = None
 
-  def init_sent(self, sent):
+  def init_sent(self, sent, words=[]):
     self.attention_vecs = []
     self.curr_sent = sent
+    self.curr_words = words
     I = self.curr_sent.as_tensor()
     W = dy.parameter(self.pW)
     b = dy.parameter(self.pb)
@@ -107,13 +109,22 @@ class MlpAttender(Attender, Serializable):
     self.attention_vecs.append(normalized)
     return normalized
 
-  def calc_context(self, state, with_temperature=True):
+  def calc_context(self, state,
+                   with_temperature=True,
+                   with_length_bias=True):
     if with_temperature:
       attention = self.calc_attention_with_temperature(state)
     else:
       attention = self.calc_attention(state)
     I = self.curr_sent.as_tensor()
-    return I * attention
+    if with_length_bias:
+      # vector with the length of the src words
+      v = np.array([np.array([float(len(w))]) for w in self.curr_words])
+      L = dy.inputTensor(v)
+      weighted_attention = dy.cmult(attention, L)
+      return I * weighted_attention
+    else:
+      return I * attention
 
 class DotAttender(Attender, Serializable):
   '''
