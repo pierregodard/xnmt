@@ -49,6 +49,8 @@ class MlpAttender(Attender, Serializable):
     hidden_dim (int): hidden MLP dimension
     param_init (ParamInitializer): how to initialize weight matrices
     bias_init (ParamInitializer): how to initialize bias vectors
+    temperature (float): a temperature parameter for the softmax
+    src_word_length_bias (bool): flag to a bias in the context vector computation
   '''
 
   yaml_tag = '!MlpAttender'
@@ -59,7 +61,9 @@ class MlpAttender(Attender, Serializable):
                state_dim=Ref("exp_global.default_layer_dim"),
                hidden_dim=Ref("exp_global.default_layer_dim"),
                param_init=Ref("exp_global.param_init", default=bare(GlorotInitializer)),
-               bias_init=Ref("exp_global.bias_init", default=bare(ZeroInitializer))):
+               bias_init=Ref("exp_global.bias_init", default=bare(ZeroInitializer)),
+               temperature : float = None,
+               src_word_length_bias: bool =False):
     self.input_dim = input_dim
     self.state_dim = state_dim
     self.hidden_dim = hidden_dim
@@ -69,6 +73,9 @@ class MlpAttender(Attender, Serializable):
     self.pb = param_collection.add_parameters((hidden_dim,), init=bias_init.initializer((hidden_dim,)))
     self.pU = param_collection.add_parameters((1, hidden_dim), init=param_init.initializer((1, hidden_dim)))
     self.curr_sent = None
+    self.curr_words = None
+    self.temperature = temperature
+    self.src_word_length_bias = src_word_length_bias
 
   def init_sent(self, sent, words=[]):
     self.attention_vecs = []
@@ -96,7 +103,7 @@ class MlpAttender(Attender, Serializable):
     self.attention_vecs.append(normalized)
     return normalized
 
-  def calc_attention_with_temperature(self, state, temperature=10.0):
+  def calc_attention_with_temperature(self, state, temperature):
     V = dy.parameter(self.pV)
     U = dy.parameter(self.pU)
 
@@ -109,17 +116,18 @@ class MlpAttender(Attender, Serializable):
     self.attention_vecs.append(normalized)
     return normalized
 
-  def calc_context(self, state,
-                   with_temperature=True,
-                   with_length_bias=True):
-    if with_temperature:
-      attention = self.calc_attention_with_temperature(state)
+  def calc_context(self, state):
+    if self.temperature is not None:
+      attention = self.calc_attention_with_temperature(state, self.temperature)
     else:
       attention = self.calc_attention(state)
     I = self.curr_sent.as_tensor()
-    if with_length_bias:
-      # vector with the length of the src words
-      v = np.array([np.array([float(len(w))]) for w in self.curr_words])
+    if self.src_word_length_bias:
+      # TODO: handle batch situations (more than one sentence at a time)
+      lengths = np.array([float(len(w)) for w in self.curr_words])
+      norm_avg_lengths = lengths / np.mean(lengths)
+      # print(norm_avg_lengths)
+      v = norm_avg_lengths.reshape(len(self.curr_words), 1)
       L = dy.inputTensor(v)
       weighted_attention = dy.cmult(attention, L)
       return I * weighted_attention
