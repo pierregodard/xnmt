@@ -125,7 +125,7 @@ class MlpAttender(Attender, Serializable):
     I = self.curr_sent.as_tensor()
     if self.src_word_length_bias:
       # TODO: handle batch situations (more than one sentence at a time)
-      f = lambda x: float(len(x))
+      f = lambda x: float(len(x)) if x != "</s>" else 1.0
       vf = np.vectorize(f)
       lengths = vf(np.array(self.curr_words))
       means = np.mean(lengths, axis=1).reshape(lengths.shape[0], 1)
