@@ -3,6 +3,7 @@ import dynet as dy
 import numpy as np
 
 from xnmt import logger
+from xnmt import batcher
 from xnmt.param_collection import ParamManager
 from xnmt.param_init import GlorotInitializer, ZeroInitializer
 from xnmt.persistence import serializable_init, Serializable, Ref, bare
@@ -124,11 +125,13 @@ class MlpAttender(Attender, Serializable):
     I = self.curr_sent.as_tensor()
     if self.src_word_length_bias:
       # TODO: handle batch situations (more than one sentence at a time)
-      lengths = np.array([float(len(w)) for w in self.curr_words])
-      norm_avg_lengths = lengths / np.mean(lengths)
-      # print(norm_avg_lengths)
-      v = norm_avg_lengths.reshape(len(self.curr_words), 1)
-      L = dy.inputTensor(v)
+      f = lambda x: float(len(x))
+      vf = np.vectorize(f)
+      lengths = vf(np.array(self.curr_words))
+      means = np.mean(lengths, axis=1).reshape(lengths.shape[0], 1)
+      norm_avg_lengths = lengths / means
+      v = np.transpose(norm_avg_lengths).reshape(attention.npvalue().shape)
+      L = dy.inputTensor(v, batched=batcher.is_batched(self.curr_words))
       weighted_attention = dy.cmult(attention, L)
       return I * weighted_attention
     else:

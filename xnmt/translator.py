@@ -132,7 +132,11 @@ class DefaultTranslator(Translator, Serializable, Reportable, EventTrigger):
     self.start_sent(src)
     embeddings = self.src_embedder.embed_sent(src)
     encodings = self.encoder(embeddings)
-    words = [src[0].vocab[w] for w in src[0]]
+    # words = [src[0].vocab[w] for w in src[0]]
+    if is_batched(src):
+      words = mark_as_batch([[single_sent.vocab[w] for w in single_sent] for single_sent in src])
+    else:
+      words = [src.vocab[w] for w in src]
     self.attender.init_sent(encodings, words)
     # Initialize the hidden state from the encoder
     ss = mark_as_batch([Vocab.SS] * len(src)) if is_batched(src) else Vocab.SS
@@ -167,7 +171,11 @@ class DefaultTranslator(Translator, Serializable, Reportable, EventTrigger):
       self.start_sent(src)
       embeddings = self.src_embedder.embed_sent(src)
       encodings = self.encoder(embeddings)
-      words = [src[0].vocab[w] for w in src[0]]
+      # words = [src[0].vocab[w] for w in src[0]]
+      if is_batched(src):
+        words = mark_as_batch([[single_sent.vocab[w] for w in single_sent] for single_sent in src])
+      else:
+        words = [src.vocab[w] for w in src]
       self.attender.init_sent(encodings, words)
       ss = mark_as_batch([Vocab.SS] * len(src)) if is_batched(src) else Vocab.SS
       initial_state = self.decoder.initial_state(self.encoder.get_final_states(), self.trg_embedder.embed(ss))
