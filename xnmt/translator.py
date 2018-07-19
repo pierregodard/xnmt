@@ -130,6 +130,11 @@ class DefaultTranslator(AutoRegressiveTranslator, Serializable, Reportable, mode
 
 
   def _encode_src(self, src):
+    if is_batched(src):
+      words = mark_as_batch([[self.src_reader.vocab[w] for w in single_sent] for single_sent in src])
+    else:
+      words = [self.src_reader.vocab[w] for w in src]
+    self.attender.curr_words = words
     embeddings = self.src_embedder.embed_sent(src)
     # We assume that the encoder can generate multiple possible encodings
     encodings = self.encoder.transduce(embeddings)

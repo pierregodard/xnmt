@@ -1,5 +1,6 @@
 import math
 import dynet as dy
+import numpy as np
 
 from xnmt import logger
 import xnmt.batcher
@@ -49,6 +50,8 @@ class MlpAttender(Attender, Serializable):
     hidden_dim: hidden MLP dimension
     param_init: how to initialize weight matrices
     bias_init: how to initialize bias vectors
+    temperature: a temperature parameter for the softmax
+    src_word_length_bias: flag to a bias in the context vector computation
     truncate_dec_batches: whether the decoder drops batch elements as soon as these are masked at some time step.
   """
 
@@ -62,6 +65,8 @@ class MlpAttender(Attender, Serializable):
                hidden_dim: int = Ref("exp_global.default_layer_dim"),
                param_init: ParamInitializer = Ref("exp_global.param_init", default=bare(GlorotInitializer)),
                bias_init: ParamInitializer = Ref("exp_global.bias_init", default=bare(ZeroInitializer)),
+               temperature: float = 1.0,
+               src_word_length_bias: bool = False,
                truncate_dec_batches: bool = Ref("exp_global.truncate_dec_batches", default=False)) -> None:
     self.input_dim = input_dim
     self.state_dim = state_dim
@@ -73,6 +78,10 @@ class MlpAttender(Attender, Serializable):
     self.pb = param_collection.add_parameters((hidden_dim,), init=bias_init.initializer((hidden_dim,)))
     self.pU = param_collection.add_parameters((1, hidden_dim), init=param_init.initializer((1, hidden_dim)))
     self.curr_sent = None
+    self.curr_words = None
+    self.temperature = temperature
+    self.src_word_length_bias = src_word_length_bias
+
 
   def init_sent(self, sent):
     self.attention_vecs = []
@@ -87,7 +96,7 @@ class MlpAttender(Attender, Serializable):
     if len(wi_dim[0]) == 1:
       self.WI = dy.reshape(self.WI, (wi_dim[0][0], 1), batch_size=wi_dim[1])
 
-  def calc_attention(self, state):
+  def calc_attention(self, state, temperature):
     V = dy.parameter(self.pV)
     U = dy.parameter(self.pU)
 
@@ -100,15 +109,28 @@ class MlpAttender(Attender, Serializable):
     scores = dy.transpose(U * h)
     if curr_sent_mask is not None:
       scores = curr_sent_mask.add_to_tensor_expr(scores, multiplicator = -100.0)
+    if temperature != 1.0:
+      t_scores = dy.cdiv(scores, dy.scalarInput(temperature))
     normalized = dy.softmax(scores)
     self.attention_vecs.append(normalized)
     return normalized
 
   def calc_context(self, state):
-    attention = self.calc_attention(state)
+    attention = self.calc_attention(state, self.temperature)
     I = self.curr_sent.as_tensor()
     if self.truncate_dec_batches: I, attention = xnmt.batcher.truncate_batches(I, attention)
-    return I * attention
+    if self.src_word_length_bias:
+      f = lambda x: float(len(x)) if x != "</s>" else 1.0
+      vf = np.vectorize(f)
+      lengths = vf(np.array(self.curr_words))
+      means = np.mean(lengths, axis=1).reshape(lengths.shape[0], 1)
+      norm_avg_lengths = lengths / means
+      v = np.transpose(norm_avg_lengths).reshape(attention.npvalue().shape)
+      L = dy.inputTensor(v, batched=xnmt.batcher.is_batched(self.curr_words))
+      weighted_attention = dy.cmult(attention, L)
+      return I * weighted_attention
+    else:
+      return I * attention
 
 class DotAttender(Attender, Serializable):
   """
