@@ -6,6 +6,7 @@ The main objects to be aware of are:
 
 * :class:`Serializable`: must be subclassed by all components that are specified in a YAML file.
 * :class:`Ref`: a reference that points somewhere in the object hierarchy, for both convenience and to realize parameter sharing.
+* :class:`Repeat`: a syntax for creating a list components with same configuration but without parameter sharing.
 * :class:`YamlPreloader`: pre-loads YAML contents so that some infrastructure can be set up, but does not initialize components.
 * :meth:`initialize_if_needed`, :meth:`initialize_object`: initialize a preloaded YAML tree, taking care of resolving references etc.
 * :meth:`save_to_file`: saves a YAML file along with registered DyNet parameters
@@ -25,7 +26,8 @@ import os
 import copy
 from functools import lru_cache, wraps
 from collections import OrderedDict
-from typing import List, Set, Callable, TypeVar, Type, Union, Optional, Dict, Sequence, Any
+import collections.abc
+from typing import List, Set, Callable, TypeVar, Type, Union, Optional, Dict, Any
 import inspect, random
 
 import yaml
@@ -33,13 +35,16 @@ import yaml
 from xnmt.tee import get_git_revision
 
 from xnmt.param_collection import ParamManager
-from xnmt import param_collection
+from xnmt import param_collection, util
+import xnmt
 
 def serializable_init(f):
   @wraps(f)
   def wrapper(obj, *args, **kwargs):
     if "xnmt_subcol_name" in kwargs:
       xnmt_subcol_name = kwargs.pop("xnmt_subcol_name")
+    elif hasattr(obj, "xnmt_subcol_name"): # happens when calling wrapped super() constructors
+      xnmt_subcol_name = obj.xnmt_subcol_name
     else:
       xnmt_subcol_name = _generate_subcol_name(obj)
     obj.xnmt_subcol_name = xnmt_subcol_name
@@ -83,6 +88,7 @@ def serializable_init(f):
     if ParamManager.initialized and xnmt_subcol_name in ParamManager.param_col.subcols:
       serialize_params["xnmt_subcol_name"] = xnmt_subcol_name
     serialize_params.update(getattr(obj, "serialize_params", {}))
+    if "yaml_path" in serialize_params: del serialize_params["yaml_path"]
     obj.serialize_params = serialize_params
     obj.init_completed = True
 
@@ -299,7 +305,6 @@ class Ref(Serializable):
     else:
       raise ValueError(f"Could not resolve path of reference {self}")
 
-
 class Path(object):
   """
   A relative or absolute path in the component hierarchy.
@@ -420,6 +425,21 @@ class Path(object):
       a = a.parent()
       ret.add(a)
     return ret
+
+class Repeat(Serializable):
+  """
+  A special object that is replaced by a list of components with identical configuration but not with shared params.
+
+  This can be specified anywhere in the config hierarchy where normally a list is expected.
+  A common use case is a multi-layer neural architecture, where layer configurations are repeated many times.
+  It is replaced in the preloader and cannot be instantiated directly.
+  """
+  yaml_tag = "!Repeat"
+  @serializable_init
+  def __init__(self, times: int, content: Any):
+    self.times = times
+    self.content = content
+    raise ValueError("Repeat cannot be instantiated")
 
 
 _subcol_rand = random.Random()
@@ -662,11 +682,13 @@ def _traverse_tree_deep(root, cur_node, traversal_order=_TraversalOrder.ROOT_FIR
 
 
 def _traverse_tree_deep_once(root, cur_node, traversal_order=_TraversalOrder.ROOT_FIRST, path_to_node=Path(),
-                             named_paths={}):
+                             named_paths=None):
   """
   Calls _traverse_tree_deep, but skips over nodes that have been visited before (can happen because we're descending into
    references).
   """
+  if named_paths is None:
+    named_paths = {}
   yielded_paths = set()
   for path, node in _traverse_tree_deep(root, cur_node, traversal_order, path_to_node, named_paths):
     if not (path.ancestors() & yielded_paths):
@@ -854,11 +876,13 @@ class YamlPreloader(object):
 
     YamlPreloader._format_strings(root, placeholders) # do this both before and after resolving !LoadSerialized
 
-    root = YamlPreloader._load_referenced_serialized(root)
+    root = YamlPreloader._load_serialized(root)
 
     random_search_report = YamlPreloader._instantiate_random_search(root)
     if random_search_report:
       setattr(root, 'random_search_report', random_search_report)
+
+    YamlPreloader._resolve_repeat(root)
 
     # if arguments were not given in the YAML file and are set to a bare(Serializable) by default, copy the bare object
     # into the object hierarchy so it can be used w/ param sharing etc.
@@ -869,7 +893,7 @@ class YamlPreloader(object):
     return UninitializedYamlObject(root)
 
   @staticmethod
-  def _load_referenced_serialized(root: Any) -> Any:
+  def _load_serialized(root: Any) -> Any:
     for path, node in _traverse_tree(root, traversal_order=_TraversalOrder.ROOT_LAST):
       if isinstance(node, LoadSerialized):
         LoadSerialized._check_wellformed(node)
@@ -962,6 +986,18 @@ class YamlPreloader(object):
         _set_descendant(experiment, path, v)
         param_report[path] = v
     return param_report
+
+  @staticmethod
+  def _resolve_repeat(root):
+    for path, node in _traverse_tree(root, traversal_order=_TraversalOrder.ROOT_LAST):
+      if isinstance(node, Repeat):
+        expanded = []
+        for _ in range(node.times):
+          expanded.append(copy.deepcopy(node.content))
+        if len(path) == 0:
+          root = expanded
+        else:
+          _set_descendant(root, path, expanded)
 
   @staticmethod
   def _resolve_bare_default_args(root: Any) -> None:
@@ -1142,13 +1178,16 @@ class _YamlDeserializer(object):
       for shared_param_path in shared_param_set:
         try:
           new_shared_val = _get_descendant(root, shared_param_path)
+          # print('found {} = {}'.format(shared_param_path, new_shared_val))
         except PathError:
+          # print('found not {}'.format(shared_param_path))
           continue
         for _, child_of_shared_param in _traverse_tree(new_shared_val, include_root=False):
           if isinstance(child_of_shared_param, Serializable):
             raise ValueError(f"{path} shared params {shared_param_set} contains Serializable sub-object {child_of_shared_param} which is not permitted")
         if not isinstance(new_shared_val, Ref):
           shared_val_choices.add(new_shared_val)
+      # print('shared set {} == {}'.format(shared_param_set, shared_val_choices))
       if len(shared_val_choices)>1:
         logger.warning(f"inconsistent shared params at {path} for {shared_param_set}: {shared_val_choices}; Ignoring these shared parameters.")
       elif len(shared_val_choices)==1:
@@ -1206,18 +1245,19 @@ class _YamlDeserializer(object):
     init_args = _get_init_args_defaults(obj)
     if "yaml_path" in init_args: init_params["yaml_path"] = path
     self.check_init_param_types(obj, init_params)
-    try:
-      if hasattr(obj, "xnmt_subcol_name"):
-        initialized_obj = obj.__class__(**init_params, xnmt_subcol_name=obj.xnmt_subcol_name)
-      else:
-        initialized_obj = obj.__class__(**init_params)
-      logger.debug(f"initialized {path}: {obj.__class__.__name__}@{id(obj)}({dict(init_params)})"[:1000])
-    except TypeError as e:
-      raise ComponentInitError(f"An error occurred when calling {type(obj).__name__}.__init__()\n"
-                               f" The following arguments were passed: {init_params}\n"
-                               f" The following arguments were expected: {init_args.keys()}\n"
-                               f" Current path: {path}\n"
-                               f" Error message: {e}")
+    with util.ReportOnException({"yaml_path":path}):
+      try:
+        if hasattr(obj, "xnmt_subcol_name"):
+          initialized_obj = obj.__class__(**init_params, xnmt_subcol_name=obj.xnmt_subcol_name)
+        else:
+          initialized_obj = obj.__class__(**init_params)
+        logger.debug(f"initialized {path}: {obj.__class__.__name__}@{id(obj)}({dict(init_params)})"[:1000])
+      except TypeError as e:
+        raise ComponentInitError(f"An error occurred when calling {type(obj).__name__}.__init__()\n"
+                                 f" The following arguments were passed: {init_params}\n"
+                                 f" The following arguments were expected: {init_args.keys()}\n"
+                                 f" Current path: {path}\n"
+                                 f" Error message: {e}")
     return initialized_obj
 
 def _resolve_serialize_refs(root):
@@ -1228,8 +1268,12 @@ def _resolve_serialize_refs(root):
       if not hasattr(node, "serialize_params"):
         raise ValueError(f"Cannot serialize node that has no serialize_params attribute: {node}\n"
                          "Did you forget to wrap the __init__() in @serializable_init ?")
-      node.resolved_serialize_params = node.serialize_params
-  if  not ParamManager.param_col.all_subcol_owners <= all_serializable:
+      xnmt.resolved_serialize_params[id(node)] = node.serialize_params
+    elif isinstance(node, collections.abc.MutableMapping):
+      xnmt.resolved_serialize_params[id(node)] = dict(node)
+    elif isinstance(node, collections.abc.Sequence):
+      xnmt.resolved_serialize_params[id(node)] = list(node)
+  if not ParamManager.param_col.all_subcol_owners <= all_serializable:
     raise RuntimeError(f"Not all registered DyNet parameter collections written out. "
                        f"Missing: {ParamManager.param_col.all_subcol_owners - all_serializable}.\n"
                        f"This indicates that potentially not all components adhere to the protocol of using "
@@ -1243,14 +1287,22 @@ def _resolve_serialize_refs(root):
           if not path_from in refs_inserted_to:
             if path_from!=path_to and matching_node is node:
                 ref = Ref(path=path_to)
-                ref.resolved_serialize_params = ref.serialize_params
-                _set_descendant(root, path_from.parent().append("resolved_serialize_params").append(path_from[-1]), ref)
+                xnmt.resolved_serialize_params[id(ref)] = ref.serialize_params
+                _set_descendant(xnmt.resolved_serialize_params[id(_get_descendant(root, path_from.parent()))], Path(path_from[-1]), ref)
+                if isinstance(_get_descendant(root, path_from.parent()), (collections.abc.MutableMapping, collections.abc.Sequence)):
+                  assert isinstance(_get_descendant(root, path_from.parent().parent()), Serializable), \
+                    "resolving references inside nested lists/dicts is not yet implemented"
+                  xnmt.resolved_serialize_params[id(_get_descendant(root, path_from.parent().parent()))][
+                    path_from[-2]] = xnmt.resolved_serialize_params[id(_get_descendant(root, path_from.parent()))]
                 refs_inserted_at.add(path_from)
                 refs_inserted_to.add(path_from)
 
 def _dump(ser_obj):
+  assert len(xnmt.resolved_serialize_params)==0
   _resolve_serialize_refs(ser_obj)
-  return yaml.dump(ser_obj)
+  ret = yaml.dump(ser_obj)
+  xnmt.resolved_serialize_params.clear()
+  return ret
 
 def save_to_file(fname: str, mod: Any) -> None:
   """
@@ -1326,6 +1378,7 @@ def check_type(obj, desired_type):
         return True
     return False
   except TypeError:
+    if type(desired_type) == str: return True # don't support forward type references
     if desired_type.__class__.__name__ == "_Any":
       return True
     elif desired_type == type(None):
@@ -1333,7 +1386,6 @@ def check_type(obj, desired_type):
     elif desired_type.__class__.__name__ == "_Union":
       return any(
         subtype.__class__.__name__ == "_ForwardRef" or check_type(obj, subtype) for subtype in desired_type.__args__)
-      collections.abc.Dict
     elif issubclass(desired_type, collections.abc.MutableMapping):
       if not isinstance(obj, collections.abc.MutableMapping): return False
       if desired_type.__args__:

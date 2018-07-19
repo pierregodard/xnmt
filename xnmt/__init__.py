@@ -22,6 +22,7 @@ dyparams.from_args()
 # using the !Classname YAML syntax
 import xnmt.attender
 import xnmt.batcher
+import xnmt.classifier
 import xnmt.conv
 import xnmt.decoder
 import xnmt.embedder
@@ -29,35 +30,43 @@ import xnmt.eval_task
 import xnmt.evaluator
 import xnmt.exp_global
 import xnmt.experiment
-import xnmt.ff
+import xnmt.fixed_size_att
 import xnmt.hyper_parameters
 import xnmt.inference
 import xnmt.input
 import xnmt.input_reader
+import xnmt.lm
 import xnmt.lstm
-import xnmt.mlp
-import xnmt.exp_global
+import xnmt.model_base
 import xnmt.optimizer
 import xnmt.param_init
+import xnmt.positional
 import xnmt.preproc_runner
 import xnmt.pyramidal
 import xnmt.residual
 import xnmt.retriever
-import xnmt.segmenting_composer
-import xnmt.segmenting_encoder
-import xnmt.specialized_encoders
+import xnmt.scorer
+import xnmt.self_attention
+import xnmt.seq_labeler
+import xnmt.specialized_encoders.tilburg_harwath
+import xnmt.specialized_encoders.self_attentional_am
+import xnmt.specialized_encoders.segmenting_encoder
 import xnmt.training_regimen
 import xnmt.training_task
 import xnmt.transformer
 import xnmt.translator
 import xnmt.persistence
+import xnmt.rl
+import xnmt.compound_expr
+
+resolved_serialize_params = {}
 
 def init_representer(dumper, obj):
-  assert hasattr(obj, "resolved_serialize_params") or hasattr(obj, "serialize_params")
-  if hasattr(obj, "resolved_serialize_params"):
-    serialize_params = obj.resolved_serialize_params
-  else:
+  if id(obj) not in resolved_serialize_params:
+  # if len(resolved_serialize_params)==0:
     serialize_params = obj.serialize_params
+  else:
+    serialize_params = resolved_serialize_params[id(obj)]
   return dumper.represent_mapping('!' + obj.__class__.__name__, serialize_params)
 
 import yaml

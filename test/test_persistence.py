@@ -154,7 +154,7 @@ class TestPreloader(unittest.TestCase):
     """)
     with self.assertRaises(ValueError):
       YamlPreloader.preload_obj(test_obj, "SOME_EXP_NAME", "SOME_EXP_DIR")
-  def test_inconsistent_loadserialized(self):
+  def test_inconsistent_loadserialized2(self):
     with open(f"{self.out_dir}/tmp1.yaml", "w") as f_out:
       yaml.dump(DummyClass(arg1="v1"), f_out)
     test_obj = yaml.load(f"""
@@ -180,7 +180,7 @@ class TestPreloader(unittest.TestCase):
     with open(f"{self.out_dir}/tmp1.yaml", "w") as f_out:
       yaml.dump(DummyClass(arg1="v1"), f_out)
     test_obj = yaml.load(f"!LoadSerialized {{ filename: {self.out_dir}/tmp1.yaml }}")
-    loaded_obj = YamlPreloader._load_referenced_serialized(test_obj)
+    loaded_obj = YamlPreloader._load_serialized(test_obj)
     self.assertIsInstance(loaded_obj, DummyClass)
     self.assertEqual(loaded_obj.arg1, "v1")
 
@@ -196,7 +196,7 @@ class TestPreloader(unittest.TestCase):
         val: !LoadSerialized
               filename: {self.out_dir}/tmp1.yaml
     """)
-    loaded_obj = YamlPreloader._load_referenced_serialized(test_obj)
+    loaded_obj = YamlPreloader._load_serialized(test_obj)
     self.assertIsInstance(loaded_obj["b"], DummyClass)
     self.assertIsInstance(loaded_obj["b"].arg1, DummyClass)
 

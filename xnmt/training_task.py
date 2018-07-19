@@ -2,9 +2,10 @@ from subprocess import Popen
 from asteval import Interpreter
 import random
 import numpy as np
-from typing import Optional
+from typing import Optional, Sequence, Union
 
-from xnmt import batcher, events, model_base, input_reader, logger, loss, loss_tracker, loss_calculator, param_collection
+from xnmt import batcher, eval_task, events, model_base, input_reader, logger, loss, loss_tracker, loss_calculator,\
+  param_collection
 from xnmt.persistence import serializable_init, Serializable, bare
 
 class TrainingTask(object):
@@ -12,8 +13,11 @@ class TrainingTask(object):
   Base class for a training task. Training tasks can perform training steps
   and keep track of the training state, but may not implement the actual training
   loop.
+
+  Args:
+    model: The model to train
   """
-  def __init__(self, model):
+  def __init__(self, model: 'model_base.TrainableModel'):
     self.model = model
 
   def load_data(self):
@@ -65,17 +69,17 @@ class TrainingTask(object):
 class SimpleTrainingTask(TrainingTask, Serializable):
   """
   Args:
-    model (model_base.TrainableModel): a trainable model
+    model: a trainable supervised model
     src_file: The file for the source data.
     trg_file: The file for the target data.
-    dev_every (int): dev checkpoints every n sentences (0 for only after epoch)
+    dev_every: dev checkpoints every n sentences (0 for only after epoch)
     batcher: Type of batcher
     loss_calculator:
-    run_for_epochs (int): number of epochs (None for unlimited epochs)
-    lr_decay (float):
-    lr_decay_times (int):  Early stopping after decaying learning rate a certain number of times
-    patience (int): apply LR decay after dev scores haven't improved over this many checkpoints
-    initial_patience (int): if given, allows adjusting patience for the first LR decay
+    run_for_epochs: number of epochs (None for unlimited epochs)
+    lr_decay: decay learning rate by multiplying by this factor
+    lr_decay_times:  Early stopping after decaying learning rate a certain number of times
+    patience: apply LR decay after dev scores haven't improved over this many checkpoints
+    initial_patience: if given, allows adjusting patience for the first LR decay
     dev_tasks: A list of tasks to run on the development set
     dev_combinator: A formula to combine together development scores into a single score to
                     choose whether to perform learning rate decay, etc.
@@ -87,20 +91,31 @@ class SimpleTrainingTask(TrainingTask, Serializable):
                          --epoch EPOCH_NUM will be appended to the command.
                          To just reload the data after each epoch set the command to 'true'.
     sample_train_sents: If given, load a random subset of training sentences before each epoch. Useful when training data does not fit in memory.
-    max_num_train_sents:
-    max_src_len:
-    max_trg_len:
+    max_num_train_sents: Train only on the first n sentences
+    max_src_len: Discard training sentences with source-side longer than this
+    max_trg_len: Discard training sentences with target-side longer than this
     name: will be prepended to log outputs if given
   """
   yaml_tag = '!SimpleTrainingTask'
 
   @serializable_init
-  def __init__(self, model, src_file=None, trg_file=None, dev_every=0,
-               batcher=bare(batcher.SrcBatcher, batch_size=32), loss_calculator=bare(loss_calculator.MLELoss),
-               run_for_epochs=None, lr_decay=1.0, lr_decay_times=3, patience=1,
-               initial_patience=None, dev_tasks=None, dev_combinator=None, restart_trainer=False,
-               reload_command=None, name=None, sample_train_sents: Optional[int] = None,
-               max_num_train_sents=None, max_src_len=None, max_trg_len=None):
+  def __init__(self,
+               model: 'model_base.ConditionedModel',
+               src_file: Union[str, Sequence[str]] = None,
+               trg_file: str = None,
+               dev_every: int = 0,
+               batcher: batcher.Batcher = bare(batcher.SrcBatcher, batch_size=32),
+               loss_calculator: loss_calculator.LossCalculator = bare(loss_calculator.AutoRegressiveMLELoss),
+               run_for_epochs: Optional[int] = None,
+               lr_decay: float = 1.0, lr_decay_times: int = 3,
+               patience: int = 1, initial_patience: Optional[int] = None,
+               dev_tasks: Sequence[eval_task.EvalTask] = None, dev_combinator=None,
+               restart_trainer: bool = False,
+               reload_command: Optional[str] = None,
+               name: Optional[str] = None,
+               sample_train_sents: Optional[int] = None,
+               max_num_train_sents: Optional[int] = None, max_src_len: Optional[int] = None,
+               max_trg_len: Optional[int] = None):
     self.src_file = src_file
     self.trg_file = trg_file
     self.dev_tasks = dev_tasks
@@ -159,13 +174,19 @@ class SimpleTrainingTask(TrainingTask, Serializable):
     if retcode is not None:
       if self.training_state.epoch_num > 0:
         logger.info('using reloaded data')
-      # reload the data   
+      # reload the data 
+      self.model.src_reader.train = self.model.trg_reader.train = True
       self.src_data, self.trg_data, self.src_batches, self.trg_batches = \
-          input_reader.read_parallel_corpus(self.model.src_reader, self.model.trg_reader,
-                                          self.src_file, self.trg_file,
-                                          batcher=self.batcher, sample_sents=self.sample_train_sents,
-                                          max_num_sents=self.max_num_train_sents,
-                                          max_src_len=self.max_src_len, max_trg_len=self.max_trg_len)
+          input_reader.read_parallel_corpus(src_reader=self.model.src_reader,
+                                            trg_reader=self.model.trg_reader,
+                                            src_file=self.src_file,
+                                            trg_file=self.trg_file,
+                                            batcher=self.batcher,
+                                            sample_sents=self.sample_train_sents,
+                                            max_num_sents=self.max_num_train_sents,
+                                            max_src_len=self.max_src_len,
+                                            max_trg_len=self.max_trg_len)
+      self.model.src_reader.train = self.model.trg_reader.train = False
       # restart data generation
       self._augmentation_handle = Popen(augment_command + " --epoch %d" % self.training_state.epoch_num, shell=True)
     else:
@@ -213,13 +234,16 @@ class SimpleTrainingTask(TrainingTask, Serializable):
         self._augment_data_initial()
       else:
         self._augment_data_next_epoch()
-    if self.training_state.epoch_num==0 or self.sample_train_sents:
+    if self.training_state.epoch_num==0 or self.sample_train_sents or \
+      self.model.src_reader.needs_reload() or self.model.trg_reader.needs_reload():
+      self.model.set_train(True)
       self.src_data, self.trg_data, self.src_batches, self.trg_batches = \
-        input_reader.read_parallel_corpus(self.model.src_reader, self.model.trg_reader,
-                                               self.src_file, self.trg_file,
-                                               batcher=self.batcher, sample_sents=self.sample_train_sents,
-                                               max_num_sents=self.max_num_train_sents,
-                                               max_src_len=self.max_src_len, max_trg_len=self.max_trg_len)
+        input_reader.read_parallel_corpus(src_reader=self.model.src_reader, trg_reader=self.model.trg_reader,
+                                          src_file=self.src_file, trg_file=self.trg_file,
+                                          batcher=self.batcher, sample_sents=self.sample_train_sents,
+                                          max_num_sents=self.max_num_train_sents,
+                                          max_src_len=self.max_src_len, max_trg_len=self.max_trg_len)
+      self.model.src_reader.train = self.model.trg_reader.train = False
     self.training_state.epoch_seed = random.randint(1,2147483647)
     random.seed(self.training_state.epoch_seed)
     np.random.seed(self.training_state.epoch_seed)
@@ -245,8 +269,8 @@ class SimpleTrainingTask(TrainingTask, Serializable):
         src = self.src_batches[batch_num]
         trg = self.trg_batches[batch_num]
         self.training_state.steps_into_epoch += 1
-        self.training_state.sents_into_epoch += len(src)
-        self.training_state.sents_since_start += len(src)
+        self.training_state.sents_into_epoch += src.batch_size()
+        self.training_state.sents_since_start += src.batch_size()
         yield src, trg
 
   def training_step(self, src, trg):
@@ -255,7 +279,7 @@ class SimpleTrainingTask(TrainingTask, Serializable):
     """
     loss_builder = loss.FactoredLossExpr()
     standard_loss = self.model.calc_loss(src, trg, self.loss_calculator)
-    additional_loss = self.model.calc_additional_loss(standard_loss)
+    additional_loss = self.model.calc_additional_loss(trg, self.model, standard_loss)
     loss_builder.add_factored_loss_expr(standard_loss)
     loss_builder.add_factored_loss_expr(additional_loss)
     return loss_builder
@@ -276,18 +300,15 @@ class SimpleTrainingTask(TrainingTask, Serializable):
     # Perform evaluation
     if self.dev_tasks and len(self.dev_tasks) > 0:
       dev_scores = []
-      dev_word_cnt = None
       with self.dev_loss_tracker.time_tracker:
         logger.info("> Checkpoint")
         for dev_task in self.dev_tasks:
-          dev_score, tmp_word_cnt = dev_task.eval()
-          if dev_word_cnt is None:
-            dev_word_cnt = tmp_word_cnt
+          dev_score = dev_task.eval()
           if type(dev_score) == list:
             dev_scores.extend(dev_score)
           else:
             dev_scores.append(dev_score)
-        self.dev_loss_tracker.set_dev_score(dev_word_cnt, dev_scores[0])
+        self.dev_loss_tracker.set_dev_score(dev_scores[0])
         for dev_score in dev_scores[1:]:
           self.dev_loss_tracker.add_aux_score(dev_score)
       self.dev_loss_tracker.report()
@@ -298,7 +319,7 @@ class SimpleTrainingTask(TrainingTask, Serializable):
         is_best = False
         if self.dev_combinator is not None:
           x = [y.value() for y in dev_scores]
-          aevala = Interpreter()
+          aevala = Interpreter(symtable={'x': x})
           my_score = aevala(self.dev_combinator)
           logger.info('  combined dev scores according to {}: {}'.format(self.dev_combinator, my_score))
           if self.training_state.best_dev_score is None or my_score > self.training_state.best_dev_score:

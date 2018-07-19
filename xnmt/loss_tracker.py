@@ -24,7 +24,7 @@ class AccumTimeTracker(object):
 class TrainLossTracker(object):
 
   REPORT_TEMPLATE_SPEED = 'Epoch {epoch:.4f}: {data}_loss/word={loss:.6f} (words={words}, words/sec={words_per_sec:.2f}, time={time})'
-  REPORT_TEMPLATE = 'Epoch {epoch:.4f}: {data}_loss/word={loss:.6f} (words={words}, time={time})'
+  REPORT_TEMPLATE = 'Epoch {epoch:.4f}: {data}_loss/word={loss:.6f} (words={words}, words/sec={words_per_sec}, time={time})'
   REPORT_TEMPLATE_ADDITIONAL = '- {loss_name} {loss:5.6f}'
   REPORT_EVERY = 1000
 
@@ -96,7 +96,7 @@ class TrainLossTracker(object):
 
 class DevLossTracker(object):
 
-  REPORT_TEMPLATE_DEV         = 'Epoch {epoch:.4f} dev {score} (words={words}, time={time})'
+  REPORT_TEMPLATE_DEV         = 'Epoch {epoch:.4f} dev {score} (time={time})'
   REPORT_TEMPLATE_DEV_AUX     = '             dev auxiliary {score}'
   REPORT_TEMPLATE_TIME_NEEDED = '             checkpoint took {time_needed}'
 
@@ -108,16 +108,14 @@ class DevLossTracker(object):
     self.fractional_epoch = 0
 
     self.dev_score = None
-    self.dev_words = 0
     self.aux_scores = []
 
     self.start_time = time.time()
     self.name = name
     self.time_tracker = AccumTimeTracker()
 
-  def set_dev_score(self, dev_words, dev_score):
+  def set_dev_score(self, dev_score):
     self.dev_score = dev_score
-    self.dev_words = dev_words
 
   def add_aux_score(self, score):
     self.aux_scores.append(score)
@@ -139,7 +137,6 @@ class DevLossTracker(object):
                                      {"key": "dev_loss",
                                       "epoch": self.fractional_epoch,
                                       "score": self.dev_score,
-                                      "words": self.dev_words,
                                       "time": util.format_time(this_report_time - self.start_time)
                                       },
                                      task_name=self.name)

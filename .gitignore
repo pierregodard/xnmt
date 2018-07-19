@@ -4,6 +4,7 @@ __pycache__
 *.pyc
 *.so
 .idea
+.mypy_cache
 examples/output
 examples/logs
 examples/models
@@ -16,6 +17,7 @@ xnmt/cython/*.so
 test/tmp
 test/config/logs/
 test/config/models/
+test/config/reports/
 /*.yaml
 examples/preproc/
 .project

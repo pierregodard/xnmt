@@ -5,9 +5,9 @@ from xnmt import logger
 import xnmt.batcher
 from xnmt.events import register_xnmt_handler, handle_xnmt_event
 from xnmt.expression_sequence import ExpressionSequence, LazyNumpyExpressionSequence
-from xnmt.linear import Linear
+from xnmt.transform import Linear
 from xnmt.param_collection import ParamManager
-from xnmt.param_init import GlorotInitializer, ZeroInitializer
+from xnmt.param_init import GlorotInitializer, ZeroInitializer, ParamInitializer
 from xnmt.persistence import serializable_init, Serializable, Ref, Path, bare
 
 class Embedder(object):
@@ -23,7 +23,7 @@ class Embedder(object):
     Args:
       word: This will generally be an integer word ID, but could also be something like a string. It could
             also be batched, in which case the input will be a :class:`xnmt.batcher.Batch` of integers or other things.
-    
+
     Returns:
       A DyNet Expression corresponding to the embedding of the word(s), possibly batched using :class:`xnmt.batcher.Batch`.
     """
@@ -35,7 +35,7 @@ class Embedder(object):
     Args:
       sent: This will generally be a list of word IDs, but could also be a list of strings or some other format.
             It could also be batched, in which case it will be a (possibly masked) :class:`xnmt.batcher.Batch` object
-    
+
     Returns:
       xnmt.expression_sequence.ExpressionSequence: An expression sequence representing vectors of each word in the input.
     """
@@ -45,8 +45,8 @@ class Embedder(object):
     # minibatch mode
     else:
       embeddings = []
-      seq_len = len(sent[0])
-      for single_sent in sent: assert len(single_sent)==seq_len
+      seq_len = sent.sent_len()
+      for single_sent in sent: assert single_sent.sent_len()==seq_len
       for word_i in range(seq_len):
         batch = xnmt.batcher.mark_as_batch([single_sent[word_i] for single_sent in sent])
         embeddings.append(self.embed(batch))
@@ -57,13 +57,13 @@ class Embedder(object):
     """Choose the vocab for the embedder basd on the passed arguments
 
     This is done in order of priority of vocab, model+yaml_path
-    
+
     Args:
       vocab (Vocab): If None, try to obtain from ``src_reader`` or ``trg_reader``, depending on the ``yaml_path``
       yaml_path (Path): Path of this embedder in the component hierarchy. Automatically determined when deserializing the YAML model.
       src_reader (InputReader): Model's src_reader, if exists and unambiguous.
       trg_reader (InputReader): Model's trg_reader, if exists and unambiguous.
-    
+
     Returns:
       xnmt.vocab.Vocab: chosen vocab
     """
@@ -91,7 +91,7 @@ class Embedder(object):
       yaml_path (Path): Path of this embedder in the component hierarchy. Automatically determined when deserializing the YAML model.
       src_reader (InputReader): Model's src_reader, if exists and unambiguous.
       trg_reader (InputReader): Model's trg_reader, if exists and unambiguous.
-    
+
     Returns:
       int: chosen vocab size
     """
@@ -100,7 +100,7 @@ class Embedder(object):
     elif vocab is not None:
       return len(vocab)
     elif "src_embedder" in yaml_path:
-      if src_reader is None or src_reader.vocab is None:
+      if src_reader is None or getattr(src_reader,"vocab",None) is None:
         raise ValueError("Could not determine src_embedder's size. Please set its vocab_size or vocab member explicitly, or specify the vocabulary of src_reader ahead of time.")
       return len(src_reader.vocab)
     elif "trg_embedder" in yaml_path or "output_projector" in yaml_path:
@@ -113,7 +113,7 @@ class Embedder(object):
 class DenseWordEmbedder(Embedder, Linear, Serializable):
   """
   Word embeddings via full matrix.
-  
+
   Args:
     emb_dim (int): embedding dimension
     weight_noise (float): apply Gaussian noise with given standard deviation to embeddings
@@ -163,7 +163,7 @@ class DenseWordEmbedder(Embedder, Linear, Serializable):
 
   def embed(self, x):
     if self.train and self.word_dropout > 0.0 and self.word_id_mask is None:
-      batch_size = len(x) if xnmt.batcher.is_batched(x) else 1
+      batch_size = x.batch_size() if xnmt.batcher.is_batched(x) else 1
       self.word_id_mask = [set(np.random.choice(self.vocab_size, int(self.vocab_size * self.word_dropout), replace=False)) for _ in range(batch_size)]
     emb_e = dy.parameter(self.embeddings)
     # single mode
@@ -183,8 +183,8 @@ class DenseWordEmbedder(Embedder, Linear, Serializable):
         ret = dy.cdiv(ret, dy.l2_norm(ret))
         if self.fix_norm != 1:
           ret *= self.fix_norm
-      if self.train and self.word_id_mask and any(x[i] in self.word_id_mask[i] for i in range(len(x))):
-        dropout_mask = dy.inputTensor(np.transpose([[0.0]*self.emb_dim if x[i] in self.word_id_mask[i] else [1.0]*self.emb_dim for i in range(len(x))]), batched=True)
+      if self.train and self.word_id_mask and any(x[i] in self.word_id_mask[i] for i in range(x.batch_size())):
+        dropout_mask = dy.inputTensor(np.transpose([[0.0]*self.emb_dim if x[i] in self.word_id_mask[i] else [1.0]*self.emb_dim for i in range(x.batch_size())]), batched=True)
         ret = dy.cmult(ret, dropout_mask)
     if self.train and self.weight_noise > 0.0:
       ret = dy.noise(ret, self.weight_noise)
@@ -251,7 +251,7 @@ class SimpleWordEmbedder(Embedder, Serializable):
 
   def embed(self, x):
     if self.train and self.word_dropout > 0.0 and self.word_id_mask is None:
-      batch_size = len(x) if xnmt.batcher.is_batched(x) else 1
+      batch_size = x.batch_size() if xnmt.batcher.is_batched(x) else 1
       self.word_id_mask = [set(np.random.choice(self.vocab_size, int(self.vocab_size * self.word_dropout), replace=False)) for _ in range(batch_size)]
     # single mode
     if not xnmt.batcher.is_batched(x):
@@ -270,8 +270,8 @@ class SimpleWordEmbedder(Embedder, Serializable):
         ret = dy.cdiv(ret, dy.l2_norm(ret))
         if self.fix_norm != 1:
           ret *= self.fix_norm
-      if self.train and self.word_id_mask and any(x[i] in self.word_id_mask[i] for i in range(len(x))):
-        dropout_mask = dy.inputTensor(np.transpose([[0.0]*self.emb_dim if x[i] in self.word_id_mask[i] else [1.0]*self.emb_dim for i in range(len(x))]), batched=True)
+      if self.train and self.word_id_mask and any(x[i] in self.word_id_mask[i] for i in range(x.batch_size())):
+        dropout_mask = dy.inputTensor(np.transpose([[0.0]*self.emb_dim if x[i] in self.word_id_mask[i] else [1.0]*self.emb_dim for i in range(x.batch_size())]), batched=True)
         ret = dy.cmult(ret, dropout_mask)
     if self.train and self.weight_noise > 0.0:
       ret = dy.noise(ret, self.weight_noise)
@@ -282,7 +282,7 @@ class NoopEmbedder(Embedder, Serializable):
   This embedder performs no lookups but only passes through the inputs.
 
   Normally, the input is an Input object, which is converted to an expression.
-  
+
   Args:
     emb_dim (int): Size of the inputs (not required)
   """
@@ -305,14 +305,14 @@ class NoopEmbedder(Embedder, Serializable):
         return LazyNumpyExpressionSequence(lazy_data=sent.get_array())
       else:
         return LazyNumpyExpressionSequence(lazy_data=xnmt.batcher.mark_as_batch(
-                                           map(lambda s: s.get_array(), sent)),
+                                           [s for s in sent]),
                                            mask=sent.mask)
     else:
       if not batched:
         embeddings = [self.embed(word) for word in sent]
       else:
         embeddings = []
-        for word_i in range(len(first_sent)):
+        for word_i in range(sent.sent_len()):
           embeddings.append(self.embed(xnmt.batcher.mark_as_batch([single_sent[word_i] for single_sent in sent])))
       return ExpressionSequence(expr_list=embeddings, mask=sent.mask)
 
@@ -320,7 +320,7 @@ class NoopEmbedder(Embedder, Serializable):
 class PretrainedSimpleWordEmbedder(SimpleWordEmbedder, Serializable):
   """
   Simple word embeddings via lookup. Initial pretrained embeddings must be supplied in FastText text format.
-  
+
   Args:
     filename (str): Filename for the pretrained embeddings
     emb_dim (int): embedding dimension; if None, use exp_global.default_layer_dim

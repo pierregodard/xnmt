@@ -3,19 +3,19 @@ from typing import List, Optional
 from xnmt import logger
 from xnmt.exp_global import ExpGlobal
 from xnmt.eval_task import EvalTask
-from xnmt.model_base import GeneratorModel
-from xnmt.param_collection import ParamManager
+from xnmt.model_base import TrainableModel
+from xnmt.param_collection import ParamManager, RevertingUnsavedModelException
 from xnmt.preproc_runner import PreprocRunner
 from xnmt.training_regimen import TrainingRegimen
 from xnmt.persistence import serializable_init, Serializable, bare
 
 class Experiment(Serializable):
-  '''
+  """
   A default experiment that performs preprocessing, training, and evaluation.
 
   The initializer calls ParamManager.populate(), meaning that model construction should be finalized at this point.
   __call__() runs the individual steps.
-  
+
   Args:
     exp_global: global experiment settings
     preproc: carry out preprocessing if specified
@@ -23,7 +23,7 @@ class Experiment(Serializable):
     train: The training regimen defines the training loop.
     evaluate: list of tasks to evaluate the model after training finishes.
     random_search_report: When random search is used, this holds the settings that were randomly drawn for documentary purposes.
-  '''
+  """
 
   yaml_tag = '!Experiment'
 
@@ -31,7 +31,7 @@ class Experiment(Serializable):
   def __init__(self,
                exp_global:Optional[ExpGlobal] = bare(ExpGlobal),
                preproc:Optional[PreprocRunner] = None,
-               model:Optional[GeneratorModel] = None,
+               model:Optional[TrainableModel] = None,
                train:Optional[TrainingRegimen] = None,
                evaluate:Optional[List[EvalTask]] = None,
                random_search_report:Optional[dict] = None) -> None:
@@ -51,17 +51,19 @@ class Experiment(Serializable):
     eval_scores = ["Not evaluated"]
     if self.train:
       logger.info("> Training")
-      save_fct() # save initial model
       self.train.run_training(save_fct = save_fct)
       logger.info('reverting learned weights to best checkpoint..')
-      ParamManager.param_col.revert_to_best_model()
+      try:
+        ParamManager.param_col.revert_to_best_model()
+      except RevertingUnsavedModelException:
+        pass
 
     evaluate_args = self.evaluate
     if evaluate_args:
       logger.info("> Performing final evaluation")
       eval_scores = []
       for evaluator in evaluate_args:
-        eval_score, _ = evaluator.eval()
+        eval_score = evaluator.eval()
         if type(eval_score) == list:
           eval_scores.extend(eval_score)
         else:
