@@ -132,6 +132,14 @@ class HtmlReporter(Reporter):
       p.text = f"{caption}: {sent}"
     return src_str, trg_str
 
+# TODO: AttentionTxtReporter
+
+# att_transpose = np.transpose(attn)
+# with open(self.get_report_path() + ".attention.txt", encoding='utf-8', mode='w') as attn_file:
+#   attn_file.write('\t' + '\t'.join(src) + '\n')
+#   for i in range(len(trg)):
+#     coeffs = '\t'.join(map(str, list(att_transpose[i])))
+#     attn_file.write('{}\t{}\n'.format(trg[i], coeffs))
 
 class AttentionHtmlReporter(HtmlReporter, Serializable):
   """
