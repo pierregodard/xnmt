@@ -37,7 +37,7 @@ class Standard(object):
   LOG_LEVEL_FILE = "DEBUG"
   DEFAULT_MOD_PATH = "{EXP_DIR}/models/{EXP}.mod"
   DEFAULT_LOG_PATH = "{EXP_DIR}/logs/{EXP}.log"
-  DEFAULT_REPORT_PATH = "{EXP_DIR}/reports/{EXP}"
+  DEFAULT_REPORT_PATH = "{EXP_DIR}/reports"
 
 class Debug(Standard):
   """

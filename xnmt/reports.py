@@ -336,7 +336,7 @@ class AttentionReporter(HtmlReporter, Serializable):
       idx: number of sentence
       src: source-side input
       src_vocab: source-side vocabulary
-      trg_vocab: source-side vocabulary
+      trg_vocab: target-side vocabulary
       output: generated output
       attentions: attention matrices
       reference: reference string
@@ -385,6 +385,97 @@ class AttentionReporter(HtmlReporter, Serializable):
     xnmt.plot.plot_attention(src_words=src_tokens, trg_words=trg_tokens, attention_matrix=attentions,
                              file_name=attention_file, size_x=size_x, size_y=size_y)
     self.html_contents.append(html_att)
+
+
+class AttentionTxtReporter(Reporter, Serializable):
+  """
+  Reporter that writes attention matrices in plain text format.
+
+  Args:
+    report_path: Path to write plain text files to
+  """
+
+  yaml_tag = "!AttentionTxtReporter"
+
+  @register_xnmt_handler
+  @serializable_init
+  def __init__(self, report_name: str = "attention", report_path: str = settings.DEFAULT_REPORT_PATH) -> None:
+    self.report_name = report_name
+    self.report_path = report_path
+
+  # TODO: factorize instead of duplicating code
+  def get_tokens(self, output=None, inp=None, inp_vocab=None) -> List[str]:
+    assert output is None or (inp is None and inp_vocab is None)
+    if output:
+      return output.readable_actions()
+    else:
+      src_is_speech = isinstance(inp, xnmt.input.ArrayInput)
+      if src_is_speech:
+        src_tokens = []
+      else:
+        src_tokens = [inp_vocab.i2w[src_token] for src_token in inp]
+      return src_tokens
+
+  # TODO: factorize instead of duplicating code
+  def get_strings(self, src_tokens, output, output_proc: xnmt.output.OutputProcessor):
+    trg_str = output.apply_post_processor(output_proc)
+    src_str = " ".join(src_tokens)
+    return src_str, trg_str
+
+  def create_report(self, idx:int, src: xnmt.input.Input, src_vocab: vocab.Vocab,
+                    trg_vocab: vocab.Vocab, output: xnmt.output.Output, output_proc: xnmt.output.OutputProcessor,
+                    attentions: np.ndarray, reference: Optional[str] = None, **kwargs) -> None:
+    """
+    Create report.
+
+    Args:
+      idx: number of sentence
+      src: source-side input
+      src_vocab: source-side vocabulary
+      trg_vocab: target-side vocabulary
+      output: generated output
+      attentions: attention matrices
+      reference: reference string
+      **kwargs: arguments to be ignored
+    """
+    src_tokens = self.get_tokens(inp=src, inp_vocab=src_vocab)
+    trg_tokens = self.get_tokens(output=output)
+    trg_tokens.append(trg_vocab.ES_STR)
+    src_str, trg_str = self.get_strings(src_tokens=src_tokens, output=output, output_proc=output_proc)
+    self.add_atts(attentions, src.get_array() if isinstance(src, xnmt.input.ArrayInput) else src_tokens,
+                  trg_tokens, idx)
+
+  # @handle_xnmt_event
+  # def on_end_inference(selfs):
+  #   self.write_txt()
+
+  def add_atts(self,
+               attentions: np.ndarray,
+               src_tokens: Union[Sequence[str], np.ndarray],
+               trg_tokens: Sequence[str],
+               idx: int,
+               desc: str = "Attention") -> None:
+    """
+    Write attention matrix in plain text format.
+
+    Args:
+      attentions: numpy array of dimensions (src_len x trg_len)
+      src_tokens: list of strings (case of src text) or numpy array of dims (nfeat x speech_len) (case of src speech)
+      trg_tokens: list of string tokens
+      idx: sentence number
+      desc: readable description
+    """
+    src_is_speech = isinstance(src_tokens, np.ndarray)
+    if src_is_speech:
+      sys.exit("Unsupported format for plain text reporting.")
+    attention_file = f"{self.report_path}/txt/attention.{util.valid_filename(desc).lower()}.{idx}.txt"
+    util.make_parent_dir(attention_file)
+    att_transpose = np.transpose(attentions)
+    with open(attention_file, encoding='utf-8', mode='w') as attn_file:
+      attn_file.write('\t' + '\t'.join(src_tokens) + '\n')
+      for i in range(len(trg_tokens)):
+        coeffs = '\t'.join(map(str, list(att_transpose[i])))
+        attn_file.write('{}\t{}\n'.format(trg_tokens[i], coeffs))
 
 
 class SegmentationReporter(Reporter, Serializable):
