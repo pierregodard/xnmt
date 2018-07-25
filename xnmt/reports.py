@@ -468,7 +468,7 @@ class AttentionTxtReporter(Reporter, Serializable):
     src_is_speech = isinstance(src_tokens, np.ndarray)
     if src_is_speech:
       sys.exit("Unsupported format for plain text reporting.")
-    attention_file = f"{self.report_path}/txt/attention.{util.valid_filename(desc).lower()}.{idx}.txt"
+    attention_file = f"{self.report_path}/txt/{util.valid_filename(desc).lower()}.{idx}.txt"
     util.make_parent_dir(attention_file)
     att_transpose = np.transpose(attentions)
     with open(attention_file, encoding='utf-8', mode='w') as attn_file:
