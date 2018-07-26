@@ -54,7 +54,7 @@ class MlpAttender(Attender, Serializable):
     bias_init: how to initialize bias vectors
     temperature: a temperature parameter for the softmax
     src_word_length_bias: flag to a bias in the context vector computation
-    aux_loss: flag to request auxiliary loss computation
+    aux_loss: weight for auxiliary loss
     truncate_dec_batches: whether the decoder drops batch elements as soon as these are masked at some time step.
   """
 
@@ -70,7 +70,7 @@ class MlpAttender(Attender, Serializable):
                bias_init: ParamInitializer = Ref("exp_global.bias_init", default=bare(ZeroInitializer)),
                temperature: float = 1.0,
                src_word_length_bias: bool = False,
-               aux_loss: bool = False,
+               aux_loss: float = 0.0,
                truncate_dec_batches: bool = Ref("exp_global.truncate_dec_batches", default=False)) -> None:
     self.input_dim = input_dim
     self.state_dim = state_dim
@@ -139,7 +139,7 @@ class MlpAttender(Attender, Serializable):
 
   @handle_xnmt_event
   def on_calc_additional_loss(self, trg, generator, generator_loss):
-    if self.aux_loss:
+    if self.aux_loss != 0.0:
       att_vecs = generator.attender.attention_vecs
       # trg length
       I = dy.scalarInput(len(trg[0]))
@@ -153,7 +153,7 @@ class MlpAttender(Attender, Serializable):
         y = att_vecs[i + 1]
         S = S + dy.dot_product(x, y)
       # return the loss
-      A = dy.abs(I - dy.scalarInput(1.0) - J - S)
+      A = dy.abs(I - dy.scalarInput(1.0) - J - S) * self.aux_loss
       loss = FactoredLossExpr()
       loss.add_loss("aux_loss", A)
       return loss
