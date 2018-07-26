@@ -4,9 +4,11 @@ import numpy as np
 
 from xnmt import logger
 import xnmt.batcher
+from xnmt.events import register_xnmt_handler, handle_xnmt_event
 from xnmt.param_collection import ParamManager
 from xnmt.param_init import GlorotInitializer, ZeroInitializer, ParamInitializer
 from xnmt.persistence import serializable_init, Serializable, Ref, bare
+from xnmt.loss import FactoredLossExpr
 
 class Attender(object):
   """
@@ -52,12 +54,13 @@ class MlpAttender(Attender, Serializable):
     bias_init: how to initialize bias vectors
     temperature: a temperature parameter for the softmax
     src_word_length_bias: flag to a bias in the context vector computation
+    aux_loss: flag to request auxiliary loss computation
     truncate_dec_batches: whether the decoder drops batch elements as soon as these are masked at some time step.
   """
 
   yaml_tag = '!MlpAttender'
 
-
+  @register_xnmt_handler
   @serializable_init
   def __init__(self,
                input_dim: int = Ref("exp_global.default_layer_dim"),
@@ -67,6 +70,7 @@ class MlpAttender(Attender, Serializable):
                bias_init: ParamInitializer = Ref("exp_global.bias_init", default=bare(ZeroInitializer)),
                temperature: float = 1.0,
                src_word_length_bias: bool = False,
+               aux_loss: bool = False,
                truncate_dec_batches: bool = Ref("exp_global.truncate_dec_batches", default=False)) -> None:
     self.input_dim = input_dim
     self.state_dim = state_dim
@@ -81,6 +85,7 @@ class MlpAttender(Attender, Serializable):
     self.curr_words = None
     self.temperature = temperature
     self.src_word_length_bias = src_word_length_bias
+    self.aux_loss = aux_loss
 
 
   def init_sent(self, sent):
@@ -96,7 +101,7 @@ class MlpAttender(Attender, Serializable):
     if len(wi_dim[0]) == 1:
       self.WI = dy.reshape(self.WI, (wi_dim[0][0], 1), batch_size=wi_dim[1])
 
-  def calc_attention(self, state, temperature):
+  def calc_attention(self, state):
     V = dy.parameter(self.pV)
     U = dy.parameter(self.pU)
 
@@ -109,14 +114,14 @@ class MlpAttender(Attender, Serializable):
     scores = dy.transpose(U * h)
     if curr_sent_mask is not None:
       scores = curr_sent_mask.add_to_tensor_expr(scores, multiplicator = -100.0)
-    if temperature != 1.0:
-      t_scores = dy.cdiv(scores, dy.scalarInput(temperature))
+    if self.temperature != 1.0:
+      t_scores = dy.cdiv(scores, dy.scalarInput(self.temperature))
     normalized = dy.softmax(scores)
     self.attention_vecs.append(normalized)
     return normalized
 
   def calc_context(self, state):
-    attention = self.calc_attention(state, self.temperature)
+    attention = self.calc_attention(state)
     I = self.curr_sent.as_tensor()
     if self.truncate_dec_batches: I, attention = xnmt.batcher.truncate_batches(I, attention)
     if self.src_word_length_bias:
@@ -131,6 +136,30 @@ class MlpAttender(Attender, Serializable):
       return I * weighted_attention
     else:
       return I * attention
+
+  @handle_xnmt_event
+  def on_calc_additional_loss(self, trg, generator, generator_loss):
+    if self.aux_loss:
+      att_vecs = generator.attender.attention_vecs
+      # trg length
+      I = dy.scalarInput(len(trg[0]))
+      # src length
+      # (this way to get the length might be unsafe, better to add src to signature?)
+      J = dy.scalarInput(att_vecs[0].npvalue().shape[0])
+      # sum of dot products from attention matrix "lines"
+      S = dy.scalarInput(0.0)
+      for i in range(len(att_vecs) - 1):
+        x = att_vecs[i]
+        y = att_vecs[i + 1]
+        S = S + dy.dot_product(x, y)
+      # return the loss
+      A = I - dy.scalarInput(1.0) - J - S
+      loss = FactoredLossExpr()
+      loss.add_loss("aux_loss", A)
+      return loss
+    else:
+      return None
+
 
 class DotAttender(Attender, Serializable):
   """
