@@ -153,7 +153,7 @@ class MlpAttender(Attender, Serializable):
         y = att_vecs[i + 1]
         S = S + dy.dot_product(x, y)
       # return the loss
-      A = I - dy.scalarInput(1.0) - J - S
+      A = dy.abs(I - dy.scalarInput(1.0) - J - S)
       loss = FactoredLossExpr()
       loss.add_loss("aux_loss", A)
       return loss
